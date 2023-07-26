@@ -1,0 +1,32 @@
+***Call these:
+     source ~/.bashrc
+     nano ~/.bashrc
+
+
+***this must be added to your file: export PATH=$PATH:/home/cefebo/my_executables
+***edit the file to look like this
+***here is my file- add the file path at the very end
+     # .bashrc
+
+     # Source global definitions
+     if [ -f /etc/bashrc ]; then
+             . /etc/bashrc
+     fi
+
+     # Uncomment the following line if you don't like systemctl's auto-paging feature:
+     # export SYSTEMD_PAGER=
+
+     # User specific aliases and functions
+     
+     export PATH=$PATH:/home/cefebo/my_executables
+
+***the source code should already be compiled if not you can go to the source and compile it yourself by doing
+     gcc -std=c99 -g resdis.c -o resdis -lm
+***this file is located in /home/cefebo/my_executables/Code Files/ in my case
+***move the resdis file to /home/cefebo/my_executables/ but keep the resdis.c file in the /Code Files/ directory
+
+***now you can call resdis and other self-defined programs at any time!
+
+
+
+
