@@ -1,12 +1,15 @@
 /*
 HOW TO RUN: 
-gcc -std=c99 -g main.c -o main -lm
-./main -p comp.prmtop -m equilr.mdcrd -d 3.0
+gcc -std=c99 -g resdis.c -o resdis -lm
+./home/cefebo/resdis -p /home/cefebo/PepBD1/Part4/comp.prmtop -m /home/cefebo/PepBD1/Part4/equilr.mdcrd -d 3.0
+./resdis -p comp.prmtop -m equilr.mdcrd -d 3.0
+
 
 HOW TO DEBUG:
-gcc -std=c99 -g main.c -o main -lm
-gdb ./main
+gcc -std=c99 -g resdis.c -o resdis -lm
+gdb ./resdis
 run -p comp.prmtop -m equilr.mdcrd -d 3.0
+run -p /home/cefebo/PepBD1/Part4/comp.prmtop -m /home/cefebo/PepBD1/Part4/equilr.mdcrd -d 3.0 -rm
 
 */
 #include <stdio.h>
@@ -16,7 +19,9 @@ run -p comp.prmtop -m equilr.mdcrd -d 3.0
 #include <sys/stat.h>
 #include <unistd.h>
 #include <math.h>
+#include <ctype.h>
 
+void deleteFiles();
 int compare(const void *a, const void *b);
 void printResiduesInRange();
 int* find_closest_distances(FILE *filename);
@@ -27,10 +32,12 @@ double calculate_distance(double x1, double y1, double z1, double x2, double y2,
 void findResidues(FILE *filename, int *within10A);
 void print_progress(int progress);
 void peptideLengths(FILE *filename);
+void residueLengths(FILE *filename);
+void createTopologyAndTrajectory();
 
 #define SIZE 1024
 #define MAX_CHAR 256
-#define MAX_DISTANCE 20.0  // Define this to be your maximum distance
+#define MAX_DISTANCE 10.0  // Define this to be your maximum distance
 
 int ranges[500][2];
 int total_residues = 0;
@@ -41,6 +48,8 @@ int MOLECULE2_SIZE = 0;
 int MAX=50;
 int Maxframes;
 int peptide_lengths[100]; // Assuming there are no more than 100 peptides, adjust if needed
+int CAcountBeforeOXT[500] = {0}; // Stores the count of "CA  " atoms before each "OXT "
+
 
 double *min_distance = NULL;
 int *results_array, *within10Am;
@@ -59,56 +68,105 @@ double distanceFind;
 //char line[100] = {0};
 
 int main(int argc, char *argv[]) {
-
-    // Check if the correct number of arguments have been provided
-    
-    if(argc != 7) {
-        fprintf(stderr, "Usage: %s -p comp.prmtop -m equilr.mdcrd -d 3.0\n", argv[0]);
-        return 1;
-    }
-
+		printWelcome();
     // Declare pointers to the input parameters
     /*
 	char *file_prmtop = NULL;
     char *file_mdcrd = NULL;
     double distanceFind = 0;
 */
-		 // Parse the command line arguments
-		for(int i = 1; i < argc; i++) {
-			if(strcmp(argv[i], "-p") == 0) {
-				file_prmtop = argv[++i];
-			} else if(strcmp(argv[i], "-m") == 0) {
-				file_mdcrd = argv[++i];
-			} else if(strcmp(argv[i], "-d") == 0) {
-				if (sscanf(argv[++i], "%lf", &distanceFind) != 1) {
-					fprintf(stderr, "Invalid distance value: %s\n", argv[i]);
-					return 1;
-				}
-			} else {
-				fprintf(stderr, "Unknown option: %s\n", argv[i]);
-				return 1;
-			}
-		}
+	  // Parse the command line arguments
+    for(int i = 1; i < argc; i++) {
+        if(strcmp(argv[i], "-h") == 0 ||strcmp(argv[i], "h") == 0||strcmp(argv[i], "-help") == 0||strcmp(argv[i], "help") == 0) {			
+			printf("\n");
+			printf("============================================================================\n");
+			printf("||                 NC STATE - Hall Group Molecular Dynamics               ||\n");
+			printf("||                             cefebo@ncsu.edu                            ||\n");
+			printf("||      _   _     ____       ____    _____     _      _____ U _____ u     ||\n");
+			printf("||     | \\ |\"| U /\"___|     / __\"| u|_ \" _|U  /\"\\  u |_ \" _|\\| ___\"|/     ||\n");
+			printf("||    <|  \\| |>\\| | u      <\\___ \\/   | |   \\/ _ \\/    | |   |  _|\"       ||\n");
+			printf("||    U| |\\  |u | |/__      u___) |  /| |\\  / ___ \\   /| |\\  | |___       ||\n");
+			printf("||     |_| \\_|   \\____|     |____/>>u |_|U /_/   \\_\\ u |_|U  |_____|      ||\n");
+			printf("||     ||   \\\\,-_// \\\\       )(  (___// \\\\_ \\\\    >> _// \\\\_ <<   >>      ||\n");
+			printf("||    (_ \")  (_(__)(__)     (__)   (__) (__(__)  (__(__) (__(__) (__)     ||\n");
+			printf("||                                                                        ||\n");
+			printf("||                                                                        ||\n");
+			printf("||            TRACER: TRAjectory Cutoff Exploration of Residues           ||\n");
+			printf("============================================================================\n");
+			printf("This utility is designed to unravel residues at a specified distance across \n");
+			printf("simulation frames in molecular dynamics simulations. It utilizes two input files: \n");
+			printf("a prmtop file and an mdcrd file. If any atom in a residue is within the specified\n");
+			printf("distance from the ligand at any point in the simulation it is in contact!\n");
+			printf("Usage: %s -p comp.prmtop -m equilr.mdcrd -d 3.0 -rm\n", argv[0]);
+			printf("Options:\n");
+			printf("  -p    Path to the .prmtop file\n");
+			printf("  -m    Path to the .mdcrd file\n");
+			printf("  -d    Distance for interaction cutoff\n");
+			printf("  -rm   WARNING: Deletes specific files (comp_stripparm.in, lign_stripparm.in, \n");
+			printf("		target.prmtop, comp_reduced.prmtop, equilr_reduced.mdcrd,\n");
+			printf("		pept.prmtop, recp_stripparm.in) from the working directory\n");
+			printf("  -help Display this help message and exit\n\n");
 
+
+			printf("1. PRMTOP File: \n");
+			printf("The prmtop file should follow the format (ligand, protein, everything else).\n");
+			printf("It does not need to be stripped of the water or any other components. This file \n");
+			printf("describes the molecular topology, i.e., the structure of the molecules in the system. \n\n");
+
+			printf("2. MDCRD File: \n");
+			printf("The mdcrd file is the trajectory file that describes the path that the system's atoms \n");
+			printf("traverse over time. This file should be stripped of water molecules before being input to \n");
+			printf("this utility. \n\n");
+
+			printf("Distance: \n");
+			printf("The specified distance is used to determine what is a contact residue. This information is \n");
+			printf("utilized to generate three distinct files used with Parmed to strip the topology files.\n");
+			printf("This utility also generates a stripped trajectory file. \n\n");
+			
+			printf("Note: Improvements are planned for future versions to potentially accommodate \n");
+			printf("trajectory files that have not been stripped of water.\n");
+
+			printf("Feel free to reach out to cefebo@ncsu.edu for any additional assistance.\n");
+
+            return 0;  // Exit the program after printing help
+        } else if(strcmp(argv[i], "-p") == 0) {
+            file_prmtop = argv[++i];
+        } else if(strcmp(argv[i], "-m") == 0) {
+            file_mdcrd = argv[++i];
+        } else if(strcmp(argv[i], "-d") == 0) {
+            if (sscanf(argv[++i], "%lf", &distanceFind) != 1) {
+                fprintf(stderr, "Invalid distance value: %s\n", argv[i]);
+                return 1;
+            }
+        } else if(strcmp(argv[i], "-rm") == 0) {
+				printf("Deleting files...\n");
+				deleteFiles();
+		} else {
+			fprintf(stderr,"For help please use: %s -help\n", argv[0]);
+
+            return 1;
+        }
+    }
 	 // Redirect stdout to a file
   
 	
 	int num_atoms_per_molecule[100]; // Assuming there are no more than 100 peptides, adjust if needed
-    printWelcome();
 	
 	FILE *fileprm = fopen(file_prmtop, "r");
     if (fileprm == NULL) {
-        printf("Cannot open file \n");
+        printf("Cannot open file PRMTOP\n");
         exit(0);
     }
 	FILE *filemdc = fopen(file_mdcrd, "r");
     if (filemdc == NULL) {
-        printf("Cannot open file \n");
+        printf("Cannot open file MDCRD\n");
         exit(0);
     }
 
 
-
+	residueLengths(fileprm);
+	rewind(fileprm);
+	
     peptideLengths(fileprm);
 	rewind(fileprm);
     
@@ -119,16 +177,48 @@ int main(int argc, char *argv[]) {
     min_distance = (double*)malloc((MOLECULE2_SIZE) * sizeof(double));
     int* within10A = find_closest_distances(filemdc); // Use returned within10A
 	rewind(filemdc);
-	
-    printINDEXtxt();
-
+    //printINDEXtxt();
     results_array = (int*)malloc(total_residues * sizeof(int));
     memset(results_array, 0, total_residues * sizeof(int)); // initialize to zeros
+	
     findResidues(fileprm, within10A); // Pass within10A to function
-
     printResiduesInRange();
-
+	createTopologyAndTrajectory();
     return 0;
+}
+
+
+void deleteFiles() {
+    char *filesToDelete[] = {
+        "comp_stripparm.in", 
+        "lign_stripparm.in",
+        "target.prmtop",
+        "comp_reduced.prmtop",
+        "equilr_reduced.mdcrd",
+        "pept.prmtop",
+        "recp_stripparm.in"
+    };
+    int numOfFiles = sizeof(filesToDelete) / sizeof(filesToDelete[0]);
+    printf("\nWARNING: You have chosen to delete the following files:\n");
+    for (int i = 0; i < numOfFiles; i++) {
+        printf(" - %s\n", filesToDelete[i]);
+    }
+    printf("Are you sure you want to proceed? (Y/N)\n");
+    char response;
+    scanf("%c", &response);
+    if (toupper(response) == 'Y') {
+        for (int i = 0; i < numOfFiles; i++) {
+            if(remove(filesToDelete[i]) == 0)
+                printf("Deleted %s.\n", filesToDelete[i]);
+            else
+                perror("Error deleting file");
+        }
+    } else {
+        printf("File deletion cancelled.\n");
+    }
+    printf("Finished deleting files.\n");
+	printf("============================================================================\n");
+
 }
 
 int compare(const void *a, const void *b) {
@@ -138,7 +228,7 @@ int compare(const void *a, const void *b) {
 void printResiduesInRange() {
     int *printed_values = malloc(total_residues * sizeof(int));
     int num_printed = 0;
-    printf("********************************************************************\n");
+	printf("============================================================================\n");
     printf("Residues with minimum distance between\n");
 
     for (int distance = 0; distance < MAX_DISTANCE; distance++) {
@@ -239,8 +329,8 @@ while (fgets(line, MAX_CHAR-1, filename) != NULL) {
 }
  int start_range = -1;
 
-printf("********************************************************************\n");
-printf("Atoms within %f angstroms of any atom in Molecule 1 after %d frames: \n",distanceFind, Maxframes);
+//printf("********************************************************************\n");
+//printf("Atoms within %f angstroms of any atom in Molecule 1 after %d frames: \n",distanceFind, Maxframes);
 for(int i = 0; i < MOLECULE2_SIZE; i++){
     if(within10A[i] == 1){
         if(start_range == -1){
@@ -249,9 +339,9 @@ for(int i = 0; i < MOLECULE2_SIZE; i++){
     } else {
         if(start_range != -1){
             if(i-1 == start_range){
-                printf("%d,", peptide_lengths[0] + start_range + 1);
+                //printf("%d,", peptide_lengths[0] + start_range + 1);
             } else {
-                printf("%d-%d,", peptide_lengths[0] + start_range + 1, peptide_lengths[0] + i);
+                //printf("%d-%d,", peptide_lengths[0] + start_range + 1, peptide_lengths[0] + i);
             }
             ranges[range_count][0] = peptide_lengths[0] + start_range + 1; // Store the start of the range
             ranges[range_count][1] = peptide_lengths[0] + i; // Store the end of the range
@@ -263,25 +353,25 @@ for(int i = 0; i < MOLECULE2_SIZE; i++){
 
 if(start_range != -1){
     if(MOLECULE2_SIZE-1 == start_range){
-        printf("%d\n", peptide_lengths[0] + start_range + 1);
+        //printf("%d\n", peptide_lengths[0] + start_range + 1);
         ranges[range_count][0] = peptide_lengths[0] + start_range + 1; // Store the start of the range
         ranges[range_count][1] = peptide_lengths[0] + MOLECULE2_SIZE; // Store the end of the range
     } else {
-        printf("%d-%d\n", peptide_lengths[0] + start_range + 1, peptide_lengths[0] + MOLECULE2_SIZE);
+        //printf("%d-%d\n", peptide_lengths[0] + start_range + 1, peptide_lengths[0] + MOLECULE2_SIZE);
         ranges[range_count][0] = peptide_lengths[0] + start_range + 1; // Store the start of the range
         ranges[range_count][1] = peptide_lengths[0] + MOLECULE2_SIZE; // Store the end of the range
     }
     range_count++;  // Increase the count of range regions if there's a range at the end
 }
 
-printf("\n");
-printf("Total range regions: %d\n", range_count);  // Print the total number of range regions
+//printf("\n");
+//printf("Total range regions: %d\n", range_count);  // Print the total number of range regions
 
-printf("********************************************************************\n");
-printf("Atoms within %f angstroms of any atom in Molecule 1 after %d frames: \n", distanceFind, Maxframes);
+//printf("********************************************************************\n");
+//printf("Atoms within %f angstroms of any atom in Molecule 1 after %d frames: \n", distanceFind, Maxframes);
 
 start_range = -1;
-printf("index "); // print "index" only once
+//printf("index "); // print "index" only once
 for(int i = 0; i < MOLECULE2_SIZE; i++){
     if(within10A[i] == 1){
         if(start_range == -1){
@@ -290,7 +380,7 @@ for(int i = 0; i < MOLECULE2_SIZE; i++){
     } else {
         if(start_range != -1){
             if(i-1 != start_range){
-                printf("%d to %d ", peptide_lengths[0] + start_range + 1, peptide_lengths[0] + i);
+                //printf("%d to %d ", peptide_lengths[0] + start_range + 1, peptide_lengths[0] + i);
             }
             ranges[range_count][0] = peptide_lengths[0] + start_range + 1; // Store the start of the range
             ranges[range_count][1] = peptide_lengths[0] + i; // Store the end of the range
@@ -302,15 +392,15 @@ for(int i = 0; i < MOLECULE2_SIZE; i++){
 
 if(start_range != -1){
     if(MOLECULE2_SIZE-1 != start_range){
-        printf("%d to %d", peptide_lengths[0] + start_range + 1, peptide_lengths[0] + MOLECULE2_SIZE); // remove comma and newline
+        //printf("%d to %d", peptide_lengths[0] + start_range + 1, peptide_lengths[0] + MOLECULE2_SIZE); // remove comma and newline
         ranges[range_count][0] = peptide_lengths[0] + start_range + 1; // Store the start of the range
         ranges[range_count][1] = peptide_lengths[0] + MOLECULE2_SIZE; // Store the end of the range
     }
     range_count++;  // Increase the count of range regions if there's a range at the end
 }
 
-printf("\n");
-printf("********************************************************************\n");
+//printf("\n");
+//printf("********************************************************************\n");
 
 
     return within10A;
@@ -322,15 +412,17 @@ void printWelcome(){
     printf("============================================================================\n");
     printf("||                 NC STATE - Hall Group Molecular Dynamics               ||\n");
     printf("||                             cefebo@ncsu.edu                            ||\n");
-    printf("||      _   _     ____       ____    _____     _      _____ U _____ u     ||\n");
-    printf("||     | \\ |\"| U /\"___|     / __\"| u|_ \" _|U  /\"\\  u |_ \" _|\\| ___\"|/     ||\n");
-    printf("||    <|  \\| |>\\| | u      <\\___ \\/   | |   \\/ _ \\/    | |   |  _|\"       ||\n");
-    printf("||    U| |\\  |u | |/__      u___) |  /| |\\  / ___ \\   /| |\\  | |___       ||\n");
-    printf("||     |_| \\_|   \\____|     |____/>>u |_|U /_/   \\_\\ u |_|U  |_____|      ||\n");
-    printf("||     ||   \\\\,-_// \\\\       )(  (___// \\\\_ \\\\    >> _// \\\\_ <<   >>      ||\n");
-    printf("||    (_ \")  (_(__)(__)     (__)   (__) (__(__)  (__(__) (__(__) (__)     ||\n");
-    printf("||                                                                        ||\n");
-    printf("||   Unraveling Residues at Desired Distance Across Simulation Frames     ||\n");
+	printf("||,---------. .-------.       ____        _______      .-''-.  .-------.  ||\n");
+	printf("||\\          \\|  _ _   \\    .'  __ `.    /   __  \\   .'_ _   \\ |  _ _   \\ ||\n");
+	printf("|| `--.  ,---'| ( ' )  |   /   '  \\  \\  | ,_/  \\__) / ( ` )   '| ( ' )  | ||\n");
+	printf("||     |   \\  |(_ o _) /  |___|  /   |,-./  )      . (_ o _)  ||(_ o _)/  ||\n");
+	printf("||     :_ _:  | (_,_).' __    _.-`   |\\  '_ ')    |   (_,_)___|| (_,_).'__||\n");
+	printf("||     (_I_)  |  |\\ \\  |  |.'   _    | > (_)  )  __'  \\  .---.|  |\\ \\ |   ||\n");
+	printf("||    (_(=)_) |  | \\ `'   /|  _( )_  |(  .  .-'_/  )\\  `-    /|  | \\ `'  /||\n");
+	printf("||     (_I_)  |  |  \\    / \\ (_ o _) / `-`-'     /  \\       / |  |  \\   / ||\n");
+	printf("||     '---'  ''-'   `'-'   '.(_,_).'   `._____.'    `'-..-'  ''-'  `'-'  ||\n");
+	printf("||                                                                        ||\n");
+	printf("||            TRACER: TRAjectory Cutoff Exploration of Residues           ||\n");
     printf("============================================================================\n");
     printf("\033[?7h");
 
@@ -357,7 +449,7 @@ void printINDEXtxt(){
             }
         }
 
-    fprintf(file, "\n%d 1\t\t\t\t\t\tNumber of frames.\n", frame);
+    fprintf(file, "\n%d 1\t\t\t\t\t\tNumber of frames.\n", frame-1);
     fprintf(file, "%s equilrr.mdcrd\n", file_mdcrd);
 
     fclose(file);
@@ -399,16 +491,9 @@ double calculate_distance(double x1, double y1, double z1, double x2, double y2,
 }
 
 void findResidues(FILE *filename, int *within10A) {
-    int CAcount = 0;
-    int CAcountBeforeOXT[500] = {0}; // Stores the count of "CA  " atoms before each "OXT "
-    int OXTindex = 0; // Stores the number of "OXT " atoms found to index CAcountBeforeOXT
-
     char line[MAX_CHAR] = {0};
     int CA_positions[total_residues];
-
-    int CA_position_count = 0;
     int is_analyze_on = 0;
-    int is_prev_line_atom_name = 0;
     int global_counter = 0;
     int OXT_found = 1; // Start this as 1 to count CAs from the beginning
     
@@ -418,7 +503,10 @@ void findResidues(FILE *filename, int *within10A) {
     within10A = new_within10A;
 
     is_CA_present = calloc(total_residues, sizeof(int));  // allocate memory and initialize all to 0
-
+	int is_prev_line_atom_name = 0;
+    int CA_position_count = 0;
+    int OXTindex = 0; // Stores the number of "OXT " atoms found to index CAcountBeforeOXT
+    int CAcount = 0;
     while(fgets(line, MAX_CHAR-1, filename) != NULL) {
         if(strstr(line, "%FORMAT(20a4)") != NULL && is_prev_line_atom_name){
             is_analyze_on = 1;
@@ -575,16 +663,16 @@ printf("\n");
             }
         }
     }
-
+/*
 printf("RESID ");
 
    for (int i = 0; i < unique_count; i++) {
             printf("%d  ", unique_positive_values[i]);
 
     }
-
+*/
 printf("\n");
-printf("********************************************************************\n");
+printf("============================================================================\n");
 printf("ResID within %f angstroms of any atom in Molecule 1 after %d frames: \n",distanceFind, Maxframes);
 
 printf("ResID including PEPTIDE 1: ");
@@ -605,7 +693,7 @@ for (int i = 0; i < unique_count; i++) {
     }
 }
 printf("\n");
-printf("********************************************************************\n");
+printf("============================================================================\n");
 printf("ResID NOT including PEPTIDE 1: ");
 
 start_range = -1;
@@ -624,6 +712,98 @@ for (int i = 0; i < unique_count; i++) {
     }
 }
 printf("\n");
+
+
+//*************************************************************************************
+//*************************************************************************************
+//THIS SECTION IS USED TO CREATE THE FILES
+// YA I KNOW PROPER CODING WOULD PORBABLY MEAN THAT I SHOULD HAVE ITS OWN FUNCTION
+// BUT DEALING WITH MEMORY IS KINDA ANNOYING AND I HAVE EVERYTHING I NEED ANYWAY.. SORRY
+		
+		// Your specific range
+		int end = CAcountBeforeOXT[1]+CAcountBeforeOXT[0];
+
+		// Open the file for writing
+		FILE *filetarget = fopen("recp_stripparm.in", "w");
+		FILE *filecomp   = fopen("comp_stripparm.in", "w");
+		FILE *filelign   = fopen("lign_stripparm.in", "w");
+		FILE *file_strip_traj   = fopen("strip_Trajectory.in", "w");
+
+		// Write the initial line to the file
+		fprintf(filetarget, "strip :1-%d,", unique_positive_values[0]-1);
+		fprintf(filecomp  , "strip :%d-%d,", CAcountBeforeOXT[0]+1,unique_positive_values[0]-1);
+		fprintf(filelign  , "strip :%d-%d\n", CAcountBeforeOXT[0]+1,end);
+		fprintf(filelign,   "parmout pept.prmtop");
+		fprintf(file_strip_traj, "trajin %s\n",file_mdcrd);
+		fprintf(file_strip_traj  , "strip :%d-%d,", CAcountBeforeOXT[0]+1,unique_positive_values[0]-1);
+
+		fclose(filelign);
+		// Now the loop begins from unique_positive_values[0]
+		int start = unique_positive_values[0];
+
+		// Define an array to save the numbers
+		int not_found_values[end];  // Assume a safe upper limit
+		int not_found_count = 0;
+
+		// Iterating over the range
+		for (int i = start; i <= end; i++) {
+			int found = 0;  // Use 0 for false
+
+			// Searching if the number is in the unique_positive_values array
+			for (int j = 0; j < unique_count; j++) {
+				if (unique_positive_values[j] == i) {
+					found = 1;  // Use 1 for true
+					break;
+				}
+			}
+
+			// If the number is not found in the unique_positive_values array, save it to the new array
+			if (found == 0) {  // Check if the value is 0 (false)
+				not_found_values[not_found_count++] = i;
+			}
+		}
+
+		// Then the rest of your code...
+		start_range = -1;
+		for (int i = 0; i < not_found_count; i++) {
+			if (i == not_found_count - 1 || not_found_values[i+1] != not_found_values[i] + 1) {
+				if (start_range == -1 || start_range == i-1) {
+					fprintf(filetarget, "%d", not_found_values[i]);  // Just print the number
+					fprintf(filecomp, "%d", not_found_values[i]);  // Just print the number
+					fprintf(file_strip_traj, "%d", not_found_values[i]);  // Just print the number
+
+				} else {
+					fprintf(filetarget, "%d-%d", not_found_values[start_range], not_found_values[i]);  // Just print the range
+					fprintf(filecomp, "%d-%d", not_found_values[start_range], not_found_values[i]);  // Just print the range
+					fprintf(file_strip_traj, "%d-%d", not_found_values[start_range], not_found_values[i]);  // Just print the range
+
+				}
+				// Print comma only if it is not the last number
+				if (i != not_found_count - 1) {
+					fprintf(filetarget, ",");
+					fprintf(filecomp, ",");
+					fprintf(file_strip_traj, ",");
+
+				}
+				start_range = -1;
+			} else {
+				if (start_range == -1) {
+					start_range = i;
+				}
+			}
+		}
+		fprintf(filetarget, "\n");
+		fprintf(filetarget, "parmout target.prmtop");
+		fprintf(filecomp, "\n");
+		fprintf(filecomp, "parmout comp_reduced.prmtop");
+		fprintf(file_strip_traj, "\n");
+		fprintf(file_strip_traj, "trajout equilr_reduced.mdcrd trajectory\n");
+
+		// Close the file
+		fclose(filetarget);
+		fclose(filecomp);
+		fclose(file_strip_traj);
+
 }
 
 void print_progress(int progress) {
@@ -650,7 +830,7 @@ void print_progress(int progress) {
 }
 
 void peptideLengths(FILE *filename) {
-    char line[MAX_CHAR];
+	char line[MAX_CHAR];
     int is_analyze_on = 0;
     int is_prev_line_atom_name = 0;
     int count = 0;
@@ -658,7 +838,6 @@ void peptideLengths(FILE *filename) {
     char sequence[5];  // To store the current sequence
     // Define an array to store the lengths of the peptides
     int peptide_index = 0;
-
     while(fgets(line, MAX_CHAR-1, filename) != NULL) {
         // A new format has been found
         if(strstr(line, "%FORMAT(20a4)") != NULL && is_prev_line_atom_name){
@@ -702,20 +881,161 @@ void peptideLengths(FILE *filename) {
             }
         }
     }
+	
+  
+	
     // Print the lengths of the peptides from the array
-    printf("\nPeptide lengths:\n");
+    //printf("\nPeptide lengths:\n");
+    // Initialize the array to store the number of atoms per molecule
     int num_atoms_per_molecule[peptide_index];
-    MOLECULE1_SIZE=peptide_lengths[0];
-    MOLECULE2_SIZE=peptide_lengths[1];
 
+    // Set sizes for the first two molecules and peptides
+    MOLECULE1_SIZE = peptide_lengths[0];
+    MOLECULE2_SIZE = peptide_lengths[1];
+	int total_RESIDUES=0;
+    // Loop through each peptide to calculate total residues and
+    // store the number of atoms in each molecule
     for (int i = 0; i < peptide_index; i++) {
-        printf("Peptide %d Atoms: %d\n", i + 1, peptide_lengths[i]);
+        // Update total residues count
         int lengthpep = peptide_lengths[i];
-        total_residues = total_residues + lengthpep;
-        num_atoms_per_molecule[i]=peptide_lengths[i];
+		int reslength = CAcountBeforeOXT[i];
+        total_residues += lengthpep;
+		total_RESIDUES += reslength;
+		
 
+        // Store the number of atoms in the current molecule
+        num_atoms_per_molecule[i] = peptide_lengths[i];
+        
+        // Print the number of atoms for each peptide with proper formatting
+        printf("Protein %2d Atoms: %10d.       Residues: %10d.\n", i + 1, peptide_lengths[i], CAcountBeforeOXT[i]);
     }
-        printf("Total Atoms:     %d\n", total_residues);
+
+    // Print total atoms with proper formatting
+    printf("Total Atoms:      %10d. Total Residues: %10d.\n", total_residues, total_RESIDUES);
 }
 
+void residueLengths(FILE *filename){
+	char line[MAX_CHAR] = {0};
+    int is_analyze_on = 0;
+    int OXT_found = 1; // Start this as 1 to count CAs from the beginning
+
+	int is_prev_line_atom_name = 0;
+    int OXTindex = 0; // Stores the number of "OXT " atoms found to index CAcountBeforeOXT
+    int CAcount = 0;
+    while(fgets(line, MAX_CHAR-1, filename) != NULL) {
+        if(strstr(line, "%FORMAT(20a4)") != NULL && is_prev_line_atom_name){
+            is_analyze_on = 1;
+            continue;
+        }
+
+        if(strstr(line, "%FLAG ATOM_NAME") != NULL){
+            is_prev_line_atom_name = 1;
+        }
+        else {
+            is_prev_line_atom_name = 0;
+        }
+
+        if(is_analyze_on && line[0] == '%'){
+            is_analyze_on = 0;
+        }
+
+        if(is_analyze_on){
+            char sequence[5];
+            for(int i = 0; i < strlen(line); i += 4){
+                if (line[i] == '\n') continue;
+
+                strncpy(sequence, &line[i], 4);
+                sequence[4] = '\0';
+
+                if(strcmp(sequence, "OXT ") == 0) {
+                    OXT_found = 1;
+                    OXTindex++;
+                }
+
+                if(OXT_found) {
+                    if(strcmp(sequence, "CA  ") == 0) {
+                        CAcount++;
+                        CAcountBeforeOXT[OXTindex]++; // Increment the count of "CA  " atoms before "OXT "
+                    }
+                }
+            }
+        }
+    }
+	
+}
+
+void createTopologyAndTrajectory(){
+    int result;
+
+    printf("Loading amber/20...\n");
+    result = system("module load amber/20 > /dev/null 2>&1");
+    if (result != 0) {
+        perror("'module load amber/20' command failed");
+        exit(EXIT_FAILURE);
+    }
+
+    char cmd[256];
+
+    printf("Running cpptraj...\n");
+    sprintf(cmd, "cpptraj -p %s < strip_Trajectory.in > /dev/null 2>&1", file_prmtop);
+    result = system(cmd);
+    if (result != 0) {
+        perror("'cpptraj' command failed");
+        exit(EXIT_FAILURE);
+    }
+
+    //printf("Removing strip_Trajectory.in...\n");
+    result = system("rm strip_Trajectory.in > /dev/null 2>&1");
+    if (result != 0) {
+        perror("'rm strip_Trajectory.in' command failed");
+        exit(EXIT_FAILURE);
+    }
+
+    printf("Running parmed (comp_stripparm.in)...\n");
+    sprintf(cmd, "parmed -p %s < comp_stripparm.in > /dev/null 2>&1", file_prmtop);
+    result = system(cmd);
+    if (result != 0) {
+        perror("'parmed' command failed");
+        exit(EXIT_FAILURE);
+    }
+
+    printf("Running parmed (lign_stripparm.in)...\n");
+    sprintf(cmd, "parmed -p %s < lign_stripparm.in > /dev/null 2>&1", file_prmtop);
+    result = system(cmd);
+    if (result != 0) {
+        perror("'parmed' command failed");
+        exit(EXIT_FAILURE);
+    }
+
+    printf("Running parmed (recp_stripparm.in)...\n");
+    sprintf(cmd, "parmed -p %s < recp_stripparm.in > /dev/null 2>&1", file_prmtop);
+    result = system(cmd);
+    if (result != 0) {
+        perror("'parmed' command failed");
+        exit(EXIT_FAILURE);
+    }
+
+    //printf("Removing comp_stripparm.in...\n");
+    result = system("rm comp_stripparm.in > /dev/null 2>&1");
+    if (result != 0) {
+        perror("'rm comp_stripparm.in' command failed");
+        exit(EXIT_FAILURE);
+    }
+
+    //printf("Removing lign_stripparm.in...\n");
+    result = system("rm lign_stripparm.in > /dev/null 2>&1");
+    if (result != 0) {
+        perror("'rm lign_stripparm.in' command failed");
+        exit(EXIT_FAILURE);
+    }
+
+    //printf("Removing recp_stripparm.in...\n");
+    result = system("rm recp_stripparm.in > /dev/null 2>&1");
+    if (result != 0) {
+        perror("'rm recp_stripparm.in' command failed");
+        exit(EXIT_FAILURE);
+    }
+
+    printf("Finished creating topology and trajectory.\n");
+}
 
