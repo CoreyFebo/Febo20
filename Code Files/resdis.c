@@ -1,15 +1,69 @@
 /*
 HOW TO RUN: 
-gcc -std=c99 -g resdis.c -o resdis -lm
-./home/cefebo/resdis -p /home/cefebo/PepBD1/Part4/comp.prmtop -m /home/cefebo/PepBD1/Part4/equilr.mdcrd -d 3.0
-./resdis -p comp.prmtop -m equilr.mdcrd -d 3.0
+gcc -std=c99 -g TRACER.c -o TRACER -lm
+./home/cefebo/TRACER -p /home/cefebo/PepBD1/Part4/comp.prmtop -m /home/cefebo/PepBD1/Part4/equilr.mdcrd -d 3.0 -rm
+./TRACER -p comp.prmtop -m equilr.mdcrd -d 3.0
 
 
 HOW TO DEBUG:
-gcc -std=c99 -g resdis.c -o resdis -lm
-gdb ./resdis
+gcc -std=c99 -g TRACER.c -o TRACER -lm
+gdb ./TRACER
 run -p comp.prmtop -m equilr.mdcrd -d 3.0
 run -p /home/cefebo/PepBD1/Part4/comp.prmtop -m /home/cefebo/PepBD1/Part4/equilr.mdcrd -d 3.0 -rm
+ 
+ 
+README: *1* Call this: nano ~/.bashrc
+
+*2* This must be added to your file: export PATH=$PATH:/home/cefebo/my_executables
+    edit the file to look like this
+    here is my file- add the file path at the very end
+      # .bashrc
+
+      # Source global definitions
+      if [ -f /etc/bashrc ]; then
+              . /etc/bashrc
+      fi
+
+      # Uncomment the following line if you don't like systemctl's auto-paging feature:
+      # export SYSTEMD_PAGER=
+
+      # User specific aliases and functions
+     
+      export PATH=$PATH:/home/cefebo/my_executables
+
+*3* The source code should already be compiled if not you can go to the source and compile it yourself by doing
+    gcc -std=c99 -g resdis.c -o resdis -lm
+    This file is located in /home/cefebo/my_executables/Code Files/ in my case
+
+*4* Move the resdis file to /home/cefebo/my_executables/ but keep the resdis.c file in the /Code Files/ directory
+
+*5* Call this: source ~/.bashrc
+
+*6* If you get a permission denied do:  chmod +x /home/cfebo/my_executables/resdis
+
+*** Now you can call resdis and other self-defined programs at any time!
+
+
+
+SLURM SCRIPT TO SUBMIT:
+
+ #!/bin/bash
+#SBATCH -p gpu-shared
+#SBATCH -t 24:00:00
+#SBATCH --gpus=1
+#SBATCH --export=none
+#SBATCH --nodes=1
+#SBATCH --ntasks-per-node=1
+#SBATCH --mem=8192M 
+#SBATCH --account=TG-CHE110065 
+#SBATCH -o out.%J
+#SBATCH -e err.%J
+module purge
+module load slurm
+module load gpu/0.15.4 openmpi/4.0.4 amber/20
+
+$AMBERHOME/bin/mm_pbsa.pl extract_coords.mmpbsa > extract_coords.log
+$AMBERHOME/bin/mm_pbsa.pl binding_energy.mmpbsa > binding_energy.log
 
 */
 #include <stdio.h>
@@ -21,6 +75,7 @@ run -p /home/cefebo/PepBD1/Part4/comp.prmtop -m /home/cefebo/PepBD1/Part4/equilr
 #include <math.h>
 #include <ctype.h>
 
+void PepBD_format_file();
 void deleteFiles();
 int compare(const void *a, const void *b);
 void printResiduesInRange();
@@ -34,6 +89,10 @@ void print_progress(int progress);
 void peptideLengths(FILE *filename);
 void residueLengths(FILE *filename);
 void createTopologyAndTrajectory();
+void countNumbersBeforeTriplet(FILE *filename);
+void modify_file_REMOVEPBC_PRMTOP(FILE *file, int reset);
+void printExactCoordsMMPBSA(int frame);
+void printBindingEnergyMMPBSA(int frame);
 
 #define SIZE 1024
 #define MAX_CHAR 256
@@ -46,7 +105,7 @@ int frame = 1;
 int MOLECULE1_SIZE = 0;
 int MOLECULE2_SIZE = 0;
 int MAX=50;
-int Maxframes;
+int Maxframes, atoms_after_reduced_mdcrd;
 int peptide_lengths[100]; // Assuming there are no more than 100 peptides, adjust if needed
 int CAcountBeforeOXT[500] = {0}; // Stores the count of "CA  " atoms before each "OXT "
 
@@ -60,10 +119,9 @@ char *file_mdcrd = "equilr.mdcrd";
 double distanceFind = 3;
 */
 
-char *file_prmtop;
-char *file_mdcrd;
+char *file_prmtop, *file_prmtop_unedited, *file_pdb, *file_mdcrd, *file_mdcrd_unedited;
 double distanceFind;
-
+int totalResiduesPepBD_PDB=0;
 
 //char line[100] = {0};
 
@@ -76,6 +134,14 @@ int main(int argc, char *argv[]) {
     double distanceFind = 0;
 */
 	  // Parse the command line arguments
+	int saveMDCRDfiletype=0;
+	int savePRMTOPfiletype=0;
+	int dFlag=0;
+	int sFlag=0;
+	int not_s_d_Flag=0;
+	int runMode = 0; 
+	
+
     for(int i = 1; i < argc; i++) {
         if(strcmp(argv[i], "-h") == 0 ||strcmp(argv[i], "h") == 0||strcmp(argv[i], "-help") == 0||strcmp(argv[i], "help") == 0) {			
 			printf("\n");
@@ -97,16 +163,24 @@ int main(int argc, char *argv[]) {
 			printf("simulation frames in molecular dynamics simulations. It utilizes two input files: \n");
 			printf("a prmtop file and an mdcrd file. If any atom in a residue is within the specified\n");
 			printf("distance from the ligand at any point in the simulation it is in contact!\n");
-			printf("Usage: %s -p comp.prmtop -m equilr.mdcrd -d 3.0 -rm\n", argv[0]);
+			printf("Usage: %s -pwi comp.prmtop -mwi equilr.mdcrd -d 8.0 -rm\n", argv[0]);
+			printf("Usage: %s -s comp.pdb -d 8.0\n", argv[0]);
 			printf("Options:\n");
+			printf("  -s    Path to the .pdb file\n");
 			printf("  -p    Path to the .prmtop file\n");
+			printf("  -pwi  Path to the .prmtop file with water and Na+ and Cl- ions\n");
 			printf("  -m    Path to the .mdcrd file\n");
+			printf("  -mwi  Path to the .mdcrd file with water and Na+ and Cl- ions\n");
 			printf("  -d    Distance for interaction cutoff\n");
 			printf("  -rm   WARNING: Deletes specific files (comp_stripparm.in, lign_stripparm.in, \n");
 			printf("		target.prmtop, comp_reduced.prmtop, equilr_reduced.mdcrd,\n");
 			printf("		pept.prmtop, recp_stripparm.in) from the working directory\n");
 			printf("  -help Display this help message and exit\n\n");
 
+			printf("1. PDB FILE: \n");
+			printf("If an error occurs it is not in the right format. More on this later...\n");
+			
+			printf("\nOR\n\n");
 
 			printf("1. PRMTOP File: \n");
 			printf("The prmtop file should follow the format (ligand, protein, everything else).\n");
@@ -116,24 +190,40 @@ int main(int argc, char *argv[]) {
 			printf("2. MDCRD File: \n");
 			printf("The mdcrd file is the trajectory file that describes the path that the system's atoms \n");
 			printf("traverse over time. This file should be stripped of water molecules before being input to \n");
-			printf("this utility. \n\n");
+			printf("this utility. If using -mwi the water and ions will be removed in final trajectory\n\n");
 
 			printf("Distance: \n");
 			printf("The specified distance is used to determine what is a contact residue. This information is \n");
 			printf("utilized to generate three distinct files used with Parmed to strip the topology files.\n");
 			printf("This utility also generates a stripped trajectory file. \n\n");
-			
-			printf("Note: Improvements are planned for future versions to potentially accommodate \n");
-			printf("trajectory files that have not been stripped of water.\n");
 
 			printf("Feel free to reach out to cefebo@ncsu.edu for any additional assistance.\n");
 
             return 0;  // Exit the program after printing help
-        } else if(strcmp(argv[i], "-p") == 0) {
+        }else if (strcmp(argv[i], "-s") == 0){
+			file_pdb = argv[++i];	
+			sFlag=1;
+		}else if(strcmp(argv[i], "-p") == 0) {
             file_prmtop = argv[++i];
+			savePRMTOPfiletype=0;
+			not_s_d_Flag=not_s_d_Flag+1;
+        } else if(strcmp(argv[i], "-pwi") == 0) {
+            file_prmtop = argv[++i];
+			savePRMTOPfiletype=2;
+			file_prmtop_unedited=file_prmtop;
+			not_s_d_Flag=not_s_d_Flag+1;
+
         } else if(strcmp(argv[i], "-m") == 0) {
-            file_mdcrd = argv[++i];
-        } else if(strcmp(argv[i], "-d") == 0) {
+			saveMDCRDfiletype = 0; 
+			file_mdcrd = argv[++i];
+			not_s_d_Flag=not_s_d_Flag+1;
+		} else if(strcmp(argv[i], "-mwi") == 0) {
+			saveMDCRDfiletype = 2; 
+			file_mdcrd = argv[++i];
+			file_mdcrd_unedited = file_mdcrd;
+			not_s_d_Flag=not_s_d_Flag+1;
+		}  else if(strcmp(argv[i], "-d") == 0) {
+			dFlag=1;
             if (sscanf(argv[++i], "%lf", &distanceFind) != 1) {
                 fprintf(stderr, "Invalid distance value: %s\n", argv[i]);
                 return 1;
@@ -143,50 +233,292 @@ int main(int argc, char *argv[]) {
 				deleteFiles();
 		} else {
 			fprintf(stderr,"For help please use: %s -help\n", argv[0]);
-
             return 1;
         }
     }
-	 // Redirect stdout to a file
-  
-	
+	// Redirect stdout to a file
+    if (sFlag==1 && dFlag==0) {
+        printf("The -s option must be used with the -d option\n");
+        fprintf(stderr, "The -s option must be used with the -d option\n");
+        return 1; // Exit with an error
+    } else if (not_s_d_Flag>0 && sFlag==1) {
+        printf("The -s can only be used with -d flag\n");
+        fprintf(stderr, "The -s can only be used with -d flag\n");
+        return 1; // Exit with an error
+    } else if (sFlag==1 && dFlag==1) {
+        runMode = 2;
+    } else {
+        runMode = 1;
+    }
 	int num_atoms_per_molecule[100]; // Assuming there are no more than 100 peptides, adjust if needed
+
+	//converts the pdb to a prmtop and incrd/mdcrd to then be used and stripped.
+	if (runMode==2){
+		FILE *filepdb = fopen(file_pdb, "r");
+		if (filepdb == NULL) {
+			printf("Cannot open file PDB\n");
+			fprintf(stderr,"For help please use: %s -help\n", argv[0]);
+			exit(0);
+		}
+    int result;
+    char cmd[256];
+
+    printf("Loading amber/20...\n");
+    result = system("module load amber/20 > /dev/null 2>&1");
+    if (result != 0) {
+        perror("'module load amber/20' command failed");
+        exit(EXIT_FAILURE);
+    }
+
+    // Assuming you have a suitable leaprc file and frcmod file for your system
+    // This will create an input file for tleap
+    FILE *inputFile = fopen("leap.in", "w");
+    if (inputFile == NULL) {
+        perror("Error opening file");
+        exit(EXIT_FAILURE);
+    }
+    fprintf(inputFile, "source leaprc.protein.ff14SB\n"); // replace with your own leaprc file
+    fprintf(inputFile, "loadAmberParams frcmod.ionsjc_tip3p\n"); // replace with your own frcmod file
+    fprintf(inputFile, "m = loadPdb %s\n", file_pdb);
+    fprintf(inputFile, "saveAmberParm m comp_pdb.prmtop comp_pdb_TEMPORARY.mdcrd\n"); 
+    fprintf(inputFile, "quit\n");
+    fclose(inputFile);
+
+    printf("Running tleap...\n");
+    sprintf(cmd, "tleap -f leap.in > /dev/null 2>&1");
+    result = system(cmd);
+    if (result != 0) {
+        perror("'tleap' command failed");
+        exit(EXIT_FAILURE);
+    }
+
+    printf("Removing leap.in...\n");
+    result = system("rm leap.in > /dev/null 2>&1");
+    if (result != 0) {
+        perror("'rm leap.in' command failed");
+        exit(EXIT_FAILURE);
+    }	
+// create an input file for cpptraj 
+//THE FILE MUST BE IN CPPTRAJ FORMAT
+
+FILE *inputCpptraj = fopen("cpptraj.in", "w");
+if (inputCpptraj == NULL) {
+    perror("Error opening file");
+    exit(EXIT_FAILURE);
+}
+fprintf(inputCpptraj, "parm comp_pdb.prmtop\n"); // load the parameter/topology file
+fprintf(inputCpptraj, "trajin comp_pdb_TEMPORARY.mdcrd\n"); // load the trajectory or coordinates
+// Add your specific cpptraj commands here
+fprintf(inputCpptraj, "trajout comp_pdb.mdcrd trajectory\n");
+fprintf(inputCpptraj, "go\n");  // Execute the preceding commands
+fprintf(inputCpptraj, "quit\n");
+fclose(inputCpptraj);
+
+printf("Running cpptraj...\n");
+sprintf(cmd, "cpptraj -i cpptraj.in > /dev/null 2>&1");
+result = system(cmd);
+if (result != 0) {
+    perror("'cpptraj' command failed");
+    exit(EXIT_FAILURE);
+}
+
+printf("Removing cpptraj.in...\n");
+result = system("rm cpptraj.in > /dev/null 2>&1");
+if (result != 0) {
+    perror("'rm cpptraj.in' command failed");
+    exit(EXIT_FAILURE);
+}
+
+file_prmtop = "comp_pdb.prmtop";
+file_mdcrd  = "comp_pdb.mdcrd";
+
+printf("Finished converting PDB to prmtop and mdcrd.\n");
+
+	}
 	
 	FILE *fileprm = fopen(file_prmtop, "r");
     if (fileprm == NULL) {
         printf("Cannot open file PRMTOP\n");
+		fprintf(stderr,"For help please use: %s -help\n", argv[0]);
         exit(0);
     }
+
 	FILE *filemdc = fopen(file_mdcrd, "r");
     if (filemdc == NULL) {
         printf("Cannot open file MDCRD\n");
+		fprintf(stderr,"For help please use: %s -help\n", argv[0]);
         exit(0);
-    }
-
-
+    }   
+	
+	if (saveMDCRDfiletype==2){
+		//strip the trajectory of water and ions
+		printf("Stripping the trajectory of Na+ Cl- and WATER...\n");
+		char cmd[256];
+		sprintf(cmd, "echo -e \"trajin %s\nstrip :Na+,Cl-,WAT\ntrajout equilr_mwi.mdcrd\n\" | cpptraj -p %s > /dev/null 2>&1", file_mdcrd, file_prmtop);
+		system(cmd);
+		file_mdcrd="equilr_mwi.mdcrd";
+		
+		FILE *filemdc = fopen(file_mdcrd, "r");
+		if (filemdc == NULL) {
+			printf("Cannot open file MDCRD-MWI\n");
+			fprintf(stderr,"For help please use: %s -help\n", argv[0]);
+			exit(0);
+		}
+		
+	}
+	
 	residueLengths(fileprm);
 	rewind(fileprm);
-	
     peptideLengths(fileprm);
 	rewind(fileprm);
+	
+	if (runMode==1){
+	if (savePRMTOPfiletype==2){
+		//strip the TOPOLOGY of water and ions
+		printf("Stripping the topology of Na+ Cl- and WATER...\n");
+		char cmd[256];
+		
+		// Calculate sum of CAcountBeforeOXT
+		int sum = 1; //1 is needed to properly strip the correct number of residues... 
+		for(int i = 0; i < 500; ++i) {
+			sum += CAcountBeforeOXT[i];
+		}
+
+		//Create the command for stripping
+		sprintf(cmd, "echo 'strip :%d-500000\nparmout comp_reduced.prmtop' > comp_stripparm.in", sum);
+		system(cmd);
+
+		//Run parmed with the created input file
+		sprintf(cmd, "parmed -p comp.prmtop < comp_stripparm.in");
+		system(cmd);
+		
+		sprintf(cmd, "rm comp_stripparm.in");
+		system(cmd);
+
+		file_prmtop="comp_reduced.prmtop";
+		
+		FILE *fileprm = fopen(file_prmtop, "r");
+		if (fileprm == NULL) {
+			printf("Cannot open file PRMTOP-MWI\n");
+			fprintf(stderr,"For help please use: %s -help\n", argv[0]);
+			exit(0);
+		}
     
-	int num_lines = count_lines(filemdc);
-    rewind(filemdc);
-	
-	Maxframes = (num_lines - 2) * 10 / 3 / total_residues;
-    min_distance = (double*)malloc((MOLECULE2_SIZE) * sizeof(double));
-    int* within10A = find_closest_distances(filemdc); // Use returned within10A
-	rewind(filemdc);
-    //printINDEXtxt();
-    results_array = (int*)malloc(total_residues * sizeof(int));
-    memset(results_array, 0, total_residues * sizeof(int)); // initialize to zeros
-	
-    findResidues(fileprm, within10A); // Pass within10A to function
+	}
+	}
+
+		int result;
+		result = system("module load amber/20 > /dev/null 2>&1");
+		if (runMode==1){
+		int num_lines = count_lines(filemdc);
+		rewind(filemdc);
+		Maxframes = (num_lines - 2) * 10 / 3 / total_residues;
+		} else if (runMode==2){
+			Maxframes=1;
+		}
+		min_distance = (double*)malloc((MOLECULE2_SIZE) * sizeof(double));
+	int* within10A = find_closest_distances(filemdc); // Use returned within10A
+		//rewind(filemdc);
+		results_array = (int*)malloc(total_residues * sizeof(int));
+		memset(results_array, 0, total_residues * sizeof(int)); // initialize to zeros
+    
+	findResidues(fileprm, within10A); // Pass within10A to function
     printResiduesInRange();
 	createTopologyAndTrajectory();
+	
+	if (runMode==2){//take the prmtop and incrd and change to pdb
+		FILE *inputCpptraj;
+		inputCpptraj = fopen("cpptraj.in", "w");
+		if (inputCpptraj == NULL) {
+			perror("Error opening file");
+			exit(EXIT_FAILURE);
+		}
+
+		// load the parameter/topology file
+		fprintf(inputCpptraj, "parm comp_reduced.prmtop\n");
+
+		// load the trajectory or coordinates
+		fprintf(inputCpptraj, "trajin equilr_reduced.mdcrd\n");
+
+		// Output the coordinates in PDB format
+		fprintf(inputCpptraj, "trajout output.pdb pdb\n");
+
+		fprintf(inputCpptraj, "go\n");  // Execute the preceding commands
+
+		fprintf(inputCpptraj, "quit\n");  // Quit cpptraj
+		fclose(inputCpptraj);  // Close the input file
+
+		printf("Running cpptraj...\n");
+
+		// run the cpptraj program with the input file
+		int result = system("cpptraj -i cpptraj.in > /dev/null 2>&1");
+		if (result != 0) {
+			perror("'cpptraj' command failed");
+			exit(EXIT_FAILURE);
+		}
+
+		printf("Finished running cpptraj.\n");
+		printf("Creating PepBD format File...\n");
+		
+		PepBD_format_file();
+
+	}
+	
+	if (runMode==1){
+	char* equilr_reduced_file ="equilr_reduced.mdcrd";
+	FILE *filemdc_reduced = fopen(equilr_reduced_file, "r");
+	countNumbersBeforeTriplet(filemdc_reduced);
+	printBindingEnergyMMPBSA(Maxframes);
+	printExactCoordsMMPBSA(Maxframes);
+	}
     return 0;
 }
+void PepBD_format_file() {
 
+    FILE *src, *dst;
+    char line[256]; // assuming each line is not more than 256 characters
+
+    src = fopen("output.pdb", "r");
+    if (src == NULL) {
+        printf("Unable to open the file.\n");
+        return;
+    }
+
+    dst = fopen("output_PepBD.pdb", "w");
+    if (dst == NULL) {
+        printf("Unable to open the file.\n");
+        fclose(src);
+        return;
+    }
+
+    char residue[5];
+    char newResidue[5];
+    int residue_no;
+
+    while (fgets(line, sizeof(line), src)) {
+        if (strncmp(line, "ATOM", 4) == 0) {
+            sscanf(line + 22, "%4d", &residue_no); // residue number is in columns 23-26
+            if (residue_no == 1 || residue_no == CAcountBeforeOXT[0]+1) {
+                strncpy(residue, line + 17, 3);  // get the existing residue name
+                residue[3] = '\0';               // terminate string
+                sprintf(newResidue, "N%-3s", residue);  // append 'N' before the residue name
+                strncpy(line + 17, newResidue, 4);  // put back the updated residue name
+            }
+			if (residue_no == CAcountBeforeOXT[0] || residue_no == totalResiduesPepBD_PDB ) {
+                strncpy(residue, line + 17, 3);  // get the existing residue name
+                residue[3] = '\0';               // terminate string
+                sprintf(newResidue, "C%-3s", residue);  // append 'N' before the residue name
+                strncpy(line + 17, newResidue, 4);  // put back the updated residue name
+            }
+			
+            fputs(line, dst);
+            //fputc('\n', dst); // add newline character at the end of each line
+        }
+    }
+
+    fclose(src);
+    fclose(dst);
+}
 
 void deleteFiles() {
     char *filesToDelete[] = {
@@ -197,6 +529,8 @@ void deleteFiles() {
         "equilr_reduced.mdcrd",
         "pept.prmtop",
         "recp_stripparm.in"
+		"comp_pdb.mdcrd"
+		"comp_pdb.prmtop"
     };
     int numOfFiles = sizeof(filesToDelete) / sizeof(filesToDelete[0]);
     printf("\nWARNING: You have chosen to delete the following files:\n");
@@ -544,7 +878,7 @@ void findResidues(FILE *filename, int *within10A) {
                         CA_positions[CA_position_count++] = global_counter;
                         is_CA_present[global_counter - 1] = 1;
                         CAcount++;
-                        CAcountBeforeOXT[OXTindex]++; // Increment the count of "CA  " atoms before "OXT "
+                        //CAcountBeforeOXT[OXTindex]++; // Increment the count of "CA  " atoms before "OXT "
                     }
                 }
             }
@@ -663,6 +997,9 @@ printf("\n");
             }
         }
     }
+
+totalResiduesPepBD_PDB = unique_count + 1 + CAcountBeforeOXT[0]; 
+
 /*
 printf("RESID ");
 
@@ -719,7 +1056,7 @@ printf("\n");
 //THIS SECTION IS USED TO CREATE THE FILES
 // YA I KNOW PROPER CODING WOULD PORBABLY MEAN THAT I SHOULD HAVE ITS OWN FUNCTION
 // BUT DEALING WITH MEMORY IS KINDA ANNOYING AND I HAVE EVERYTHING I NEED ANYWAY.. SORRY
-		
+	
 		// Your specific range
 		int end = CAcountBeforeOXT[1]+CAcountBeforeOXT[0];
 
@@ -1014,6 +1351,55 @@ void createTopologyAndTrajectory(){
         perror("'parmed' command failed");
         exit(EXIT_FAILURE);
     }
+	
+    printf("Copying original prmtop files...\n");
+
+    sprintf(cmd, "cp comp_reduced.prmtop comp_reduced_parmstrip.prmtop > /dev/null 2>&1");
+    result = system(cmd);
+    if (result != 0) {
+        perror("'cp comp_reduced.prmtop' command failed");
+    }
+
+    sprintf(cmd, "cp pept.prmtop pept_parmstrip.prmtop > /dev/null 2>&1");
+    result = system(cmd);
+    if (result != 0) {
+        perror("'cp pept.prmtop' command failed");
+    }
+
+    sprintf(cmd, "cp target.prmtop target_parmstrip.prmtop > /dev/null 2>&1");
+    result = system(cmd);
+    if (result != 0) {
+        perror("'cp target.prmtop' command failed");
+    }
+	
+FILE *file1, *file2, *file3;
+
+    file1 = fopen("comp_reduced_parmstrip.prmtop", "r+");
+    if (file1 == NULL) {
+        printf("Error opening file 1\n");
+        perror("Error");
+    } else {
+        modify_file_REMOVEPBC_PRMTOP(file1, 1);
+        fclose(file1);
+    }
+
+    file2 = fopen("pept_parmstrip.prmtop", "r+");
+    if (file2 == NULL) {
+        printf("Error opening file 2\n");
+        perror("Error");
+    } else {
+        modify_file_REMOVEPBC_PRMTOP(file2,1);
+        fclose(file2);
+    }
+
+    file3 = fopen("target_parmstrip.prmtop", "r+");
+    if (file3 == NULL) {
+        printf("Error opening file 3\n");
+        perror("Error");
+    } else {
+        modify_file_REMOVEPBC_PRMTOP(file3,1);
+        fclose(file3);
+    }
 
     //printf("Removing comp_stripparm.in...\n");
     result = system("rm comp_stripparm.in > /dev/null 2>&1");
@@ -1035,7 +1421,197 @@ void createTopologyAndTrajectory(){
         perror("'rm recp_stripparm.in' command failed");
         exit(EXIT_FAILURE);
     }
+	
 
-    printf("Finished creating topology and trajectory.\n");
+
+	printf("Finished creating topology and trajectory.\n");
+
 }
 
+void countNumbersBeforeTriplet(FILE *filename) {
+    char line[MAX_CHAR];
+    int count = 0;
+    int numCount = 0;
+    int isCpptrajLinePassed = 0;
+    
+    while(fgets(line, MAX_CHAR-1, filename) != NULL) {
+        // Skip the line with "Cpptraj Generated trajectory"
+        if(strstr(line, "Cpptraj Generated trajectory") != NULL) {
+            isCpptrajLinePassed = 1;
+            continue;
+        }
+
+        if(!isCpptrajLinePassed) {
+            continue;
+        }
+        
+        char* token = strtok(line, " \t\n");
+        while (token != NULL) {
+            numCount++;
+            token = strtok(NULL, " \t\n");
+        }
+
+        // Check if the line is a full line (not the end of the block)
+        if (numCount != 3) {
+            count += numCount;
+            numCount = 0;
+        } else {
+            //printf("Number of numbers before the line with three numbers: %d\n", count);
+            break;
+        }
+    }
+	atoms_after_reduced_mdcrd=count/3;
+}
+
+void modify_file_REMOVEPBC_PRMTOP(FILE *file, int reset) {
+    static int hasRun = 0;
+    if (hasRun && !reset) {
+        return; // Exit if the function has already run and reset is not true
+    }
+
+    if (file == NULL) {
+        printf("Error opening file!\n");
+        return;
+    }
+
+    char line[SIZE];
+    int skip_lines = 0, line_num = 0;
+    long pos;
+    while (fgets(line, SIZE, file)) {
+        line_num++;
+        if (strstr(line, "%FORMAT(10I8)")) {
+            skip_lines = 2;
+        }
+        else if (skip_lines == 1) {
+            pos = ftell(file);
+            int entry_count = 0;
+            char* token = strtok(line, " "); // tokenize the line by spaces
+            
+            while (token != NULL) {
+                entry_count++;
+                if (entry_count == 8) {
+                    pos += token - line;
+                    fseek(file, pos, SEEK_SET);
+                    fprintf(file, "  0");  // Use 7 spaces before "0" to replace the 8-character entry
+                    break; // Once the 8th entry is found and replaced, we can exit the loop
+                }
+                token = strtok(NULL, " ");
+            }
+            hasRun = 1; // Mark that the function has run and modified the file
+            break;  // If we found and replaced the entries, we can exit the loop
+        }
+        else if (skip_lines > 0) {
+            skip_lines--;
+        }
+    }
+}
+
+
+void printExactCoordsMMPBSA(int frame){
+	FILE *file = fopen("extract_coords.mmpbsa", "w");
+		fprintf(file, "@GENERAL\n\n");
+		fprintf(file, "PREFIX                  snapshot\n");
+		fprintf(file, "PATH                    ./\n");
+		fprintf(file, "COMPLEX                 1\n");
+		fprintf(file, "RECEPTOR                1\n");
+		fprintf(file, "LIGAND                  1\n");
+		fprintf(file, "COMPT                   ./comp_reduced_parmstrip.prmtop\n"); //unsolvated
+		fprintf(file, "RECPT                   ./target_parmstrip.prmtop\n"); //UNsolvated
+		fprintf(file, "LIGPT                   ./pept_parmstrip.prmtop\n"); //unsolvated
+		fprintf(file, "GC                      1\n");
+		fprintf(file, "AS                      0\n");
+		fprintf(file, "DC                      0\n");
+		fprintf(file, "MM                      0\n");
+		fprintf(file, "GB                      0\n");
+		fprintf(file, "PB                      0\n");
+		fprintf(file, "MS                      0\n");
+		fprintf(file, "NM                      0\n");
+		fprintf(file, "@MAKECRD\n");
+		fprintf(file, "BOX                     YES\n");
+		fprintf(file, "NTOTAL                  %d\n",atoms_after_reduced_mdcrd);
+		fprintf(file, "NSTART                  1\n");
+		fprintf(file, "NSTOP                   %d\n",frame);
+		fprintf(file, "NFREQ                   1\n");
+		fprintf(file, "NUMBER_LIG_GROUPS       1\n");
+		fprintf(file, "LSTART                  1\n");
+		fprintf(file, "LSTOP                   %d\n",MOLECULE1_SIZE);
+		fprintf(file, "NUMBER_REC_GROUPS       1\n");
+		fprintf(file, "RSTART                  %d\n",MOLECULE1_SIZE+1);
+		fprintf(file, "RSTOP                   %d\n",atoms_after_reduced_mdcrd);
+		fprintf(file, "@TRAJECTORY\n");
+		fprintf(file, "TRAJECTORY              ./equilr_reduced.mdcrd\n"); //SOLVATED. but maybe not?
+		fprintf(file, "@PROGRAMS\n");
+    fclose(file);
+}
+
+void printBindingEnergyMMPBSA(int frame){
+	//int result = ceil(((frame)/((double)((int)floor((frame)/100.0)))));
+    FILE *fp;
+    fp = fopen("binding_energy.mmpbsa", "w");
+	fprintf(fp, "@GENERAL			    \n");
+    fprintf(fp, "VERBOSE               0\n");
+    fprintf(fp, "PARALLEL              0\n");
+    fprintf(fp, "PREFIX                snapshot\n");
+    fprintf(fp, "PATH                  ./\n");
+    fprintf(fp, "START                 1\n");
+    fprintf(fp, "STOP                  %d\n",Maxframes);
+    fprintf(fp, "OFFSET                1\n");
+    fprintf(fp, "COMPLEX               1\n");
+    fprintf(fp, "RECEPTOR              1\n");
+    fprintf(fp, "LIGAND                1\n");
+	fprintf(fp, "COMPT               ./comp_reduced_parmstrip.prmtop\n"); //unsolvated
+	fprintf(fp, "RECPT               ./target_parmstrip.prmtop\n"); //UNsolvated
+	fprintf(fp, "LIGPT               ./pept_parmstrip.prmtop\n"); //unsolvated
+    fprintf(fp, "GC                    0\n");
+    fprintf(fp, "AS                    0\n");
+    fprintf(fp, "DC                    0\n");
+    fprintf(fp, "MM                    1\n");
+    fprintf(fp, "GB                    1\n");
+    fprintf(fp, "PB                    0\n");
+    fprintf(fp, "MS                    1\n");
+    fprintf(fp, "NM                    1\n");
+    /*
+	fprintf(fp, "@PB\n");
+    fprintf(fp, "PROC                  2\n");
+    fprintf(fp, "REFE                  0\n");
+    fprintf(fp, "INDI                  1.0\n");
+    fprintf(fp, "EXDI                  80.0\n");
+    fprintf(fp, "SCALE                 2\n");
+    fprintf(fp, "LINIT                 1000\n");
+    fprintf(fp, "ISTRNG                0.0\n");
+    fprintf(fp, "RADIOPT               0\n");
+    fprintf(fp, "ARCRES                0.0625\n");
+    fprintf(fp, "INP                   1\n");
+    fprintf(fp, "SURFTEN               0.005\n");
+    fprintf(fp, "SURFOFF               0.00\n");
+    fprintf(fp, "IVCAP                 0\n");
+    fprintf(fp, "CUTCAP                -1.0\n");
+    fprintf(fp, "XCAP                  0.0\n");
+    fprintf(fp, "YCAP                  0.0\n");
+    fprintf(fp, "ZCAP                  0.0\n");
+    */
+	fprintf(fp, "@MM\n");
+    fprintf(fp, "DIELC                 1.0\n");
+    fprintf(fp, "@GB\n");
+    fprintf(fp, "IGB                   2\n");
+    fprintf(fp, "GBSA                  1\n");
+    fprintf(fp, "SALTCON               0.00\n");
+    fprintf(fp, "EXTDIEL               80.0\n");
+    fprintf(fp, "INTDIEL               1.0\n");
+    fprintf(fp, "SURFTEN               0.005\n");
+    fprintf(fp, "SURFOFF               0.00\n");
+    fprintf(fp, "@MS\n");
+    fprintf(fp, "PROBE                 0.0\n");
+	fprintf(fp, "@NM\n");
+    fprintf(fp, "PROC                  1\n");
+    fprintf(fp, "MAXCYC                10000\n");
+    fprintf(fp, "DRMS                  0.5\n");
+    fprintf(fp, "IGB                   1\n");
+    fprintf(fp, "SALTCON               0.00\n");
+    fprintf(fp, "EXTDIEL               80.0\n");
+    fprintf(fp, "SURFTEN               0.005\n");
+    fprintf(fp, "DIELC                 4\n");
+    fprintf(fp, "@PROGRAMS\n");
+    fclose(fp);
+
+}
